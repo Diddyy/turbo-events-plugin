@@ -972,7 +972,10 @@ public sealed partial class EventsAdmin(
         if (set.Currencies.Length > PrizeSetEntity.MAX_CURRENCIES)
             return "Too many currencies.";
 
-        return events.PrizeProblem(set);
+        // The service words a problem to follow "can't be paid: "; on its own it is a sentence.
+        return events.PrizeProblem(set) is { Length: > 0 } problem
+            ? char.ToUpperInvariant(problem[0]) + problem[1..] + "."
+            : null;
     }
 
     private string DefaultSet => events.DefaultPrizeSet;

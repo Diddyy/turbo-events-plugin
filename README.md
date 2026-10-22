@@ -196,3 +196,12 @@ endpoints and the leaderboard, over an in-memory SQLite database and a fake hote
 TurboCloudPath=/path/to/turbo-cloud DesignTime=true dotnet ef migrations add <Name> \
   --project TurboEvents/TurboEvents.csproj --context EventsDbContext --output-dir Database/Migrations
 ```
+
+## Screens
+
+| | |
+| --- | --- |
+| ![Events](docs/screenshots/events-hosted.png) | ![One event](docs/screenshots/events-event.png) |
+| The events hosted: what runs now, the week's figures, each event's peak and winners. | One event: where, who, how it ended, and its winners with what they were paid. |
+| ![Prize sets](docs/screenshots/events-prizes.png) | ![Leaderboard](docs/screenshots/events-leaderboard.png) |
+| The prize sets, and a set refused for a currency the hotel does not have. | The leaderboard: paid wins in the week, the month or ever. |
