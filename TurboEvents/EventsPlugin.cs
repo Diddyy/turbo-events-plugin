@@ -10,7 +10,7 @@ using Turbo.Contracts.Plugins;
 using Turbo.Contracts.Plugins.Admin;
 using Turbo.Contracts.Plugins.Exports;
 using Turbo.Database.Extensions;
-using Turbo.Events;
+using Turbo.Primitives.Events;
 using Turbo.Primitives.Furniture.Providers;
 using Turbo.Primitives.Networking;
 using Turbo.Primitives.Players.Providers;
@@ -61,7 +61,7 @@ public sealed class EventsPlugin : ITurboPlugin
     public Task StartAsync(IServiceProvider services, CancellationToken ct)
     {
         _notices = services.GetRequiredService<Notices>();
-        _notices.Publisher = Host<EventSystem>(services).PublishAsync;
+        _notices.Publisher = Host<IEventPublisher>(services).PublishAsync;
 
         _stop = new CancellationTokenSource();
         _ticker = RunAsync(
