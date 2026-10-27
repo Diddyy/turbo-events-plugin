@@ -26,7 +26,7 @@ public sealed class Notices(ILogger<Notices> logger, IConfiguration? configurati
     public const string ENDED = "event.ended";
     public const string WINNER = "event.winner";
 
-    /// <summary>The host's <c>EventSystem.PublishAsync</c> while the plugin runs; null: nothing is published.</summary>
+    /// <summary>The host's <c>IEventPublisher.PublishAsync</c> while the plugin runs; null: nothing is published.</summary>
     public Func<PluginNoticeEvent, CancellationToken, Task>? Publisher { get; set; }
 
     public Task StartedAsync(HostedEventEntity hosted, CancellationToken ct) =>

@@ -3,7 +3,6 @@
     "Key": "events",
     "Version": "1.0.0",
     "Author": "Diddyy",
-    "AssemblyFile": "TurboEvents.dll",
     "Dependencies": [],
     "TablePrefix": "events_",
     "ApiVersion": 1
