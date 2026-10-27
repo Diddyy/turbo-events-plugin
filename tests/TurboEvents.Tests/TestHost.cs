@@ -4,39 +4,16 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Data.Sqlite;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Turbo.Contracts.Plugins.Admin;
-using Turbo.Database.Delegates;
 using Turbo.Primitives.Plugins.Events;
+using Turbo.Testing;
 using TurboEvents.Database;
 using TurboEvents.Hosting;
 using TurboEvents.Prizes;
 
 namespace TurboEvents.Tests;
-
-internal sealed class ManualTime : TimeProvider
-{
-    public DateTimeOffset Now { get; set; } = new(2026, 10, 22, 12, 0, 0, TimeSpan.Zero);
-
-    public override DateTimeOffset GetUtcNow() => Now;
-
-    public void Advance(TimeSpan by) => Now += by;
-}
-
-internal sealed class Settings(EventsConfig value) : IOptionsMonitor<EventsConfig>
-{
-    public EventsConfig Value { get; set; } = value;
-
-    public EventsConfig CurrentValue => Value;
-
-    public EventsConfig Get(string? name) => Value;
-
-    public IDisposable? OnChange(Action<EventsConfig, string?> listener) => null;
-}
 
 /// <summary>
 /// A hotel as the plugin sees it: who is online, rooms, the notifications sent, and wallets,
@@ -189,82 +166,69 @@ internal sealed class FakeHotel : IEventsHotel
 }
 
 /// <summary>
-/// The plugin's services over an in-memory SQLite database (the real SQL: unique keys,
-/// transactions), a fake hotel and a clock the test moves. Players: 1 Alice (staff), 2 Bob,
+/// The plugin loaded in a test hotel (turbo-cloud docs/plugin-testing.md): compiled from its
+/// sources as a hotel compiles it, its tables in an in-memory SQLite database, its settings the
+/// hotel's, its clock the hotel's, which the test moves. The hotel it reaches through
+/// <see cref="IEventsHotel"/> is <see cref="FakeHotel"/>. Players: 1 Alice (staff), 2 Bob,
 /// 3 Carol, 4 Dave; room 10 Lobby and room 20 Pool.
 /// </summary>
 internal sealed class TestHost : IDisposable
 {
     public static readonly CancellationToken CT = CancellationToken.None;
 
-    private readonly SqliteConnection _connection = new("Data Source=:memory:");
-
     public TestHost(EventsConfig? config = null)
     {
-        _connection.Open();
-        Settings = new Settings(config ?? new EventsConfig());
-
-        var services = new ServiceCollection();
-
-        services.AddSingleton<TablePrefixProvider>(() => "events_");
-        services.AddDbContext<EventsDbContext>(o => o.UseSqlite(_connection));
-        Services = services.BuildServiceProvider();
-
-        using (var scope = Services.CreateScope())
-            scope.ServiceProvider.GetRequiredService<EventsDbContext>().Database.EnsureCreated();
-
-        Scopes = Services.GetRequiredService<IServiceScopeFactory>();
-        Notices = new Notices(NullLogger<Notices>.Instance)
-        {
-            Publisher = (notice, _) =>
-            {
-                Published.Add(notice);
-
-                return Task.CompletedTask;
-            },
-        };
-        Payer = new PrizePayer(Scopes, Hotel, Time, NullLogger<PrizePayer>.Instance);
-        Events = new EventService(Scopes, Hotel, Settings, Payer, Notices, Time);
-        AdminService = new EventsAdmin(Scopes, Events, Payer, Time);
+        // The plugin's own room count runs while it is loaded: not during a test.
+        Kit.Settings.Set($"{EventsConfig.SECTION_NAME}:AttendanceSampleSeconds", 3600);
+        Configure(config ?? new EventsConfig());
+        Kit.Replace<IEventsHotel>(Hotel);
+        Plugin = Kit.LoadAsync<EventsPlugin>(ct: CT).GetAwaiter().GetResult();
 
         Hotel.Online.UnionWith([1, 2, 3, 4]);
         Hotel.Rooms[10] = new RoomInfo("Lobby", 3);
         Hotel.Rooms[20] = new RoomInfo("Pool", 1);
     }
 
-    public ManualTime Time { get; } = new();
+    public TestHotel Kit { get; } = TestHotel.Create(new DateTimeOffset(2026, 10, 22, 12, 0, 0, TimeSpan.Zero));
 
-    public Settings Settings { get; }
+    public TestPlugin Plugin { get; }
 
-    public ServiceProvider Services { get; }
+    public ManualClock Time => Kit.Clock;
 
-    public IServiceScopeFactory Scopes { get; }
+    public IOptionsMonitor<EventsConfig> Settings => Plugin.Service<IOptionsMonitor<EventsConfig>>();
+
+    public IServiceScopeFactory Scopes => Plugin.Service<IServiceScopeFactory>();
 
     public FakeHotel Hotel { get; } = new();
 
-    public List<PluginNoticeEvent> Published { get; } = [];
+    /// <summary>The notices the plugin published, in order.</summary>
+    public IReadOnlyList<PluginNoticeEvent> Published => Kit.Events.Of<PluginNoticeEvent>();
 
-    public Notices Notices { get; }
+    public Notices Notices => Plugin.Service<Notices>();
 
-    public PrizePayer Payer { get; }
+    public PrizePayer Payer => Plugin.Service<PrizePayer>();
 
-    public EventService Events { get; }
+    public EventService Events => Plugin.Service<EventService>();
 
-    public EventsAdmin AdminService { get; }
+    public DateTime Now => Time.GetUtcNow().UtcDateTime;
 
-    public DateTime Now => Time.Now.UtcDateTime;
+    /// <summary>The hotel's settings for the plugin become <paramref name="config"/>'s, as a save in the panel does.</summary>
+    public void Configure(EventsConfig config)
+    {
+        foreach (var property in typeof(EventsConfig).GetProperties())
+            Kit.Settings.Set($"{EventsConfig.SECTION_NAME}:{property.Name}", property.GetValue(config));
+    }
 
     public T Query<T>(Func<EventsDbContext, T> query)
     {
-        using var scope = Services.CreateScope();
+        using var db = Plugin.Db<EventsDbContext>();
 
-        return query(scope.ServiceProvider.GetRequiredService<EventsDbContext>());
+        return query(db);
     }
 
     public void Change(Action<EventsDbContext> change)
     {
-        using var scope = Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<EventsDbContext>();
+        using var db = Plugin.Db<EventsDbContext>();
 
         change(db);
         db.SaveChanges();
@@ -327,66 +291,46 @@ internal sealed class TestHost : IDisposable
             _ => $"#{player}",
         };
 
-    public Admin Admin() => new(AdminService);
+    public Admin Admin() => new(Kit);
 
-    public void Dispose()
-    {
-        Services.Dispose();
-        _connection.Dispose();
-    }
+    public void Dispose() => Kit.DisposeAsync().AsTask().GetAwaiter().GetResult();
 }
 
-/// <summary>The admin endpoints as the host maps them, called as the panel would.</summary>
-internal sealed class Admin : IPluginAdminBuilder
+/// <summary>The admin endpoints, called as the panel would: <c>GET prizes</c>, <c>DELETE prizes/{id}</c>.</summary>
+internal sealed class Admin(TestHotel kit)
 {
-    public Admin(EventsAdmin admin) => admin.Configure(this);
+    // The panel's staff member: player 9, beside the hotel's players 1-4.
+    private readonly TestPlayer _staff = Staff(kit);
 
-    public Dictionary<
-        string,
-        (string Node, Func<PluginAdminRequest, CancellationToken, Task<PluginAdminResult>> Handler)
-    > Map { get; } = [];
+    public IReadOnlyList<string> Nodes => kit.Admin.Nodes;
 
-    public List<string> Nodes { get; } = [];
-
-    public List<PluginAdminPage> Pages { get; } = [];
-
-    public string Node(string name, string description)
-    {
-        Nodes.Add($"plugin.events.{name}");
-
-        return $"plugin.events.{name}";
-    }
-
-    void IPluginAdminBuilder.Map(
-        string method,
-        string pattern,
-        string node,
-        Func<PluginAdminRequest, CancellationToken, Task<PluginAdminResult>> handler
-    ) => Map[$"{method} {pattern}"] = (node, handler);
-
-    public void Page(PluginAdminPage page) => Pages.Add(page);
+    public IReadOnlyList<PluginAdminPage> Pages => kit.Admin.Pages;
 
     public Task<PluginAdminResult> CallAsync(
         string route,
         long id = 0,
         string query = "",
         string? body = null
-    ) =>
-        Map[route]
-            .Handler(
-                new PluginAdminRequest(
-                    route.Split(' ')[0],
-                    route,
-                    new Dictionary<string, string> { ["id"] = id.ToString() },
-                    query
-                        .Split('&', StringSplitOptions.RemoveEmptyEntries)
-                        .Select(x => x.Split('='))
-                        .ToDictionary(x => x[0], x => Uri.UnescapeDataString(x[1])),
-                    body is null ? null : JsonDocument.Parse(body).RootElement,
-                    9
-                ),
-                TestHost.CT
-            );
+    )
+    {
+        var method = route.Split(' ')[0];
+        var path = route[(method.Length + 1)..].Replace("{id}", id.ToString());
+
+        return kit.Admin.CallAsync(
+            method,
+            $"events/{path}{(query.Length > 0 ? "?" + query : "")}",
+            body is null ? null : JsonDocument.Parse(body).RootElement,
+            _staff,
+            TestHost.CT
+        );
+    }
+
+    private static TestPlayer Staff(TestHotel kit)
+    {
+        kit.Fake.Players.NextId = 9;
+
+        return kit.Player("Panel").AsStaff();
+    }
 
     public static string Json(PluginAdminResult result) => JsonSerializer.Serialize(result.Value);
 }
