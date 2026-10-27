@@ -1,107 +1,27 @@
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading;
 using System.Threading.Tasks;
 using Turbo.Primitives.Commands;
-using Turbo.Primitives.Players;
-using Turbo.Primitives.Rooms;
+using Turbo.Testing;
 using TurboEvents.Commands;
 using TurboEvents.Hosting;
 using Xunit;
 
 namespace TurboEvents.Tests;
 
-/// <summary>A player typing in a room, as core's runner hands a line to an operator command.</summary>
-internal sealed class FakeExecutor(
-    int player,
-    string name,
-    int room,
-    int[] inRoom,
-    params string[] nodes
-) : IOperatorExecutor
-{
-    public PlayerId? PlayerId => player;
-
-    public string Name => name;
-
-    public RoomId? RoomId => room;
-
-    public IReadOnlyList<PlayerId> RoomPlayerIds => [.. inRoom.Select(x => (PlayerId)x)];
-
-    public Task<bool> HasAsync(string node, CancellationToken ct) =>
-        Task.FromResult(nodes.Contains(node));
-
-    public Task ReplyAsync(string text, CancellationToken ct) => Task.CompletedTask;
-
-    public Task NoticeAsync(IReadOnlyList<string> lines, CancellationToken ct) =>
-        Task.CompletedTask;
-}
-
-internal sealed class FakeContext(
-    IOperatorExecutor executor,
-    int confirmAt = 10,
-    bool confirmed = false
-) : IOperatorCommandContext
-{
-    public IOperatorExecutor Executor => executor;
-
-    public string ArgumentText => "";
-
-    public bool IsConfirmed => confirmed;
-
-    public Task NotifyAsync(
-        PlayerId playerId,
-        string textKey,
-        string defaultText,
-        IReadOnlyList<string> parameters,
-        CancellationToken ct
-    ) => Task.CompletedTask;
-
-    public bool ShouldConfirm(int players) => !confirmed && players >= confirmAt;
-
-    public IReadOnlyList<PlayerId> SnapshotRecipients(
-        string scope,
-        IEnumerable<PlayerId> recipients
-    ) => [.. recipients];
-
-    public Task<CommandBatchResult> ExecuteBatchAsync(
-        IReadOnlyList<ResolvedPlayer> players,
-        int unitsPerPlayer,
-        Func<ResolvedPlayer, CancellationToken, ValueTask<bool>> operation,
-        CancellationToken ct
-    ) => throw new NotSupportedException();
-
-    public Task<TargetSelection> ResolveAsync(PlayerTarget target, CancellationToken ct) =>
-        Task.FromResult(
-            target.Text switch
-            {
-                "Bob" => TargetSelection.Of(new ResolvedPlayer(2, "Bob")),
-                "Dave" => TargetSelection.Of(new ResolvedPlayer(4, "Dave")),
-                _ => TargetSelection.Refused(CommandResult.Fail("not_found", target.Text)),
-            }
-        );
-
-    public Task<TargetSelection> SelectAsync(PlayerTarget target, CancellationToken ct) =>
-        ResolveAsync(target, ct);
-}
-
-/// <summary>The commands as core's runner calls them: the line's room and players, confirmation, replies.</summary>
+/// <summary>The commands said in a room, run by the hotel's own operator command runner.</summary>
 public sealed class CommandTests
 {
     [Fact]
     public async Task Event_calls_everyone_online_who_is_not_in_the_room_already()
     {
         using var host = new TestHost();
-        var command = new EventCommand(host.Events, host.Hotel);
+        var alice = host.Player(1, room: 10, EventsNodes.EVENT);
+        host.Player(3, room: 10);
 
-        var result = await command.ExecuteAsync(
-            new FakeContext(new FakeExecutor(1, "Alice", 10, [1, 3])),
-            new EventCommand.Arguments(new RestOfLine("Falling Furni")),
-            TestHost.CT
-        );
+        await alice.SaysAsync(":event Falling Furni", TestHost.CT);
 
-        Assert.Equal((EventService.STARTED, false), (result.Status, result.IsFailure));
+        alice.Should().HaveHadCommand(CommandOutcome.Completed);
+        alice.Should().HaveBeenWhispered("Falling Furni started: 2 players were called to it.");
         Assert.Equal([2, 4], Assert.Single(host.Hotel.Sent).Players);
     }
 
@@ -109,44 +29,28 @@ public sealed class CommandTests
     public async Task Event_waits_for_confirm_when_it_reaches_many_and_checks_first()
     {
         using var host = new TestHost();
-        var command = new EventCommand(host.Events, host.Hotel);
-        var arguments = new EventCommand.Arguments(new RestOfLine("Tag"));
-        var alice = new FakeExecutor(1, "Alice", 10, [1]);
+        var alice = host.Player(1, room: 10, EventsNodes.EVENT);
+        host.Kit.Settings.Set("Turbo:Commands:ConfirmAtPlayers", 3);
 
-        var waiting = await command.ExecuteAsync(
-            new FakeContext(alice, confirmAt: 3),
-            arguments,
-            TestHost.CT
-        );
-        Assert.True(waiting.NeedsConfirmation);
-        Assert.Equal((EventCommand.REACHES, "3"), (waiting.Status, waiting.Parameters[0]));
+        await alice.SaysAsync(":event Tag", TestHost.CT);
+        alice.Should().HaveHadCommand(CommandOutcome.AwaitingConfirmation);
+        alice.Should().HaveBeenWhispered("That calls 3 players to this room. Type :confirm");
         Assert.Empty(host.Hotel.Sent);
 
-        var confirmed = await command.ExecuteAsync(
-            new FakeContext(alice, confirmAt: 3, confirmed: true),
-            arguments,
-            TestHost.CT
-        );
-        Assert.Equal(EventService.STARTED, confirmed.Status);
+        await alice.SaysAsync(":confirm", TestHost.CT);
+        alice.Should().HaveBeenWhispered("Tag started: 3 players were called to it.");
 
         // A line the cooldown refuses is refused before anyone is asked to confirm.
-        var bob = new FakeExecutor(2, "Bob", 20, [2]);
-        var refused = await command.ExecuteAsync(
-            new FakeContext(bob, confirmAt: 1),
-            arguments,
-            TestHost.CT
-        );
-        Assert.Equal(
-            (EventService.HOTEL_COOLDOWN, false),
-            (refused.Status, refused.NeedsConfirmation)
-        );
+        var bob = host.Player(2, room: 20, EventsNodes.EVENT);
+        host.Kit.Settings.Set("Turbo:Commands:ConfirmAtPlayers", 1);
+        await bob.SaysAsync(":event Tag", TestHost.CT);
+        Assert.StartsWith("An event started a moment ago.", bob.Whispers[^1]);
 
         // Holding the bypass node, the cooldowns do not apply.
-        var staff = new FakeExecutor(2, "Bob", 20, [2], "events.cooldown.bypass");
-        Assert.Equal(
-            EventService.STARTED,
-            (await command.ExecuteAsync(new FakeContext(staff), arguments, TestHost.CT)).Status
-        );
+        host.Kit.Settings.Set("Turbo:Commands:ConfirmAtPlayers", 10);
+        bob.WithPermissions(EventsNodes.COOLDOWN_BYPASS);
+        await bob.SaysAsync(":event Tag", TestHost.CT);
+        Assert.StartsWith("Tag started:", bob.Whispers[^1]);
     }
 
     [Fact]
@@ -155,30 +59,21 @@ public sealed class CommandTests
         using var host = new TestHost();
         host.Prize("small", "credits:25");
         await host.StartAsync();
-        var command = new WinnerCommand(host.Events);
-        var alice = new FakeContext(new FakeExecutor(1, "Alice", 10, [1, 2]));
+        var alice = host.Player(1, room: 10, EventsNodes.WINNER);
+        host.Player(2, room: 10);
 
-        var paid = await command.ExecuteAsync(
-            alice,
-            new WinnerCommand.Arguments(new PlayerTarget("Bob"), "small"),
-            TestHost.CT
-        );
-        Assert.Equal((EventService.PAID, "Bob"), (paid.Status, paid.Parameters[0]));
+        await alice.SaysAsync(":winner bob small", TestHost.CT);
+        Assert.StartsWith("Bob won ", alice.Whispers[^1]);
         Assert.Equal(25, host.Hotel.Balance(2, "credits"));
 
-        var elsewhere = await command.ExecuteAsync(
-            alice,
-            new WinnerCommand.Arguments(new PlayerTarget("Dave"), "small"),
-            TestHost.CT
-        );
-        Assert.Equal((EventService.NOT_IN_ROOM, true), (elsewhere.Status, elsewhere.IsFailure));
+        await alice.SaysAsync(":winner Dave small", TestHost.CT);
+        Assert.Equal("Dave is not in this room.", alice.Whispers[^1]);
 
-        var nobody = await command.ExecuteAsync(
-            alice,
-            new WinnerCommand.Arguments(new PlayerTarget("Zed"), "small"),
-            TestHost.CT
+        await alice.SaysAsync(":winner Zed small", TestHost.CT);
+        Assert.Equal(
+            CommandReplyKeys.Defaults[CommandReplyKeys.PLAYER_NOT_FOUND].Replace("%0%", "Zed"),
+            alice.Whispers[^1]
         );
-        Assert.Equal("not_found", nobody.Status);
     }
 
     [Fact]
@@ -186,21 +81,14 @@ public sealed class CommandTests
     {
         using var host = new TestHost();
         await host.StartAsync();
-        var command = new EndEventCommand(host.Events);
 
-        var other = await command.ExecuteAsync(
-            new FakeContext(new FakeExecutor(1, "Alice", 20, [1])),
-            new NoArguments(),
-            TestHost.CT
-        );
-        Assert.Equal(EventService.NONE_RUNNING, other.Status);
+        var alice = host.Player(1, room: 20, EventsNodes.END_EVENT);
+        await alice.SaysAsync(":endevent", TestHost.CT);
+        alice.Should().HaveBeenWhispered("No event is running in this room.");
 
-        var ended = await command.ExecuteAsync(
-            new FakeContext(new FakeExecutor(2, "Bob", 10, [2])),
-            new NoArguments(),
-            TestHost.CT
-        );
-        Assert.Equal(EventService.ENDED, ended.Status);
+        var bob = host.Player(2, room: 10, EventsNodes.END_EVENT);
+        await bob.SaysAsync(":endevent", TestHost.CT);
+        bob.Should().HaveBeenWhispered("Falling Furni ended after");
     }
 
     [Fact]

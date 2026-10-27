@@ -5,26 +5,14 @@
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
+  <!-- The plugin test kit (turbo-cloud docs/plugin-testing.md), from the server the plugin builds against. -->
+  <Import Project="$(TurboBin)/plugin-sdk/Turbo.Plugin.Tests.props" />
   <ItemGroup>
-    <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="xunit.v3" />
     <PackageReference Include="xunit.runner.visualstudio" PrivateAssets="all" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../server/TurboEvents.csproj" />
-  </ItemGroup>
-  <!-- Here the server's assemblies are copied: the tests run without a server. -->
-  <ItemGroup>
-    <Reference Include="$(TurboBin)/Turbo.Contracts.dll" />
-    <Reference Include="$(TurboBin)/Turbo.Primitives.dll" />
-    <Reference Include="$(TurboBin)/Turbo.Database.dll" />
-    <Reference Include="$(TurboBin)/Turbo.Pipeline.dll" />
-    <Reference Include="$(TurboBin)/Turbo.Events.dll" />
-    <Reference Include="$(TurboBin)/Turbo.Runtime.dll" />
-    <Reference Include="$(TurboBin)/Pomelo.EntityFrameworkCore.MySql.dll" />
-    <Reference Include="$(TurboBin)/Orleans.Core.Abstractions.dll" />
-    <Reference Include="$(TurboBin)/Orleans.Serialization.Abstractions.dll" />
   </ItemGroup>
 </Project>

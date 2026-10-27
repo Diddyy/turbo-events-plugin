@@ -119,7 +119,7 @@ public sealed class WinnerTests
         Assert.Contains("no currency called pixels", broken.Parameters[1]);
 
         // The default set, when the line names none.
-        host.Settings.Value = new EventsConfig { DefaultPrizeSet = "small" };
+        host.Configure(new EventsConfig { DefaultPrizeSet = "small" });
         Assert.Equal(EventService.PAID, (await host.AwardAsync(2)).Status);
     }
 
