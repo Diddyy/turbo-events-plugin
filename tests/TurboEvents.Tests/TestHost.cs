@@ -184,18 +184,24 @@ internal sealed class TestHost : IDisposable
         Kit.Replace<IEventsHotel>(Hotel);
         Plugin = Kit.LoadAsync<EventsPlugin>(ct: CT).GetAwaiter().GetResult();
 
+        // The hotel's players 1-4, online, as the kit numbers them.
+        foreach (var player in (int[])[1, 2, 3, 4])
+            Kit.Player(Name(player));
+
         Hotel.Online.UnionWith([1, 2, 3, 4]);
         Hotel.Rooms[10] = new RoomInfo("Lobby", 3);
         Hotel.Rooms[20] = new RoomInfo("Pool", 1);
     }
 
-    public TestHotel Kit { get; } = TestHotel.Create(new DateTimeOffset(2026, 10, 22, 12, 0, 0, TimeSpan.Zero));
+    public TestHotel Kit { get; } =
+        TestHotel.Create(new DateTimeOffset(2026, 10, 22, 12, 0, 0, TimeSpan.Zero));
 
     public TestPlugin Plugin { get; }
 
     public ManualClock Time => Kit.Clock;
 
-    public IOptionsMonitor<EventsConfig> Settings => Plugin.Service<IOptionsMonitor<EventsConfig>>();
+    public IOptionsMonitor<EventsConfig> Settings =>
+        Plugin.Service<IOptionsMonitor<EventsConfig>>();
 
     public IServiceScopeFactory Scopes => Plugin.Service<IServiceScopeFactory>();
 
@@ -216,7 +222,10 @@ internal sealed class TestHost : IDisposable
     public void Configure(EventsConfig config)
     {
         foreach (var property in typeof(EventsConfig).GetProperties())
-            Kit.Settings.Set($"{EventsConfig.SECTION_NAME}:{property.Name}", property.GetValue(config));
+            Kit.Settings.Set(
+                $"{EventsConfig.SECTION_NAME}:{property.Name}",
+                property.GetValue(config)
+            );
     }
 
     public T Query<T>(Func<EventsDbContext, T> query)
@@ -290,6 +299,10 @@ internal sealed class TestHost : IDisposable
             4 => "Dave",
             _ => $"#{player}",
         };
+
+    /// <summary>Player <paramref name="player"/> in <paramref name="room"/>, holding <paramref name="nodes"/>.</summary>
+    public TestPlayer Player(int player, int room, params string[] nodes) =>
+        Kit.Player(Name(player)).InRoom(room).WithPermissions(nodes);
 
     public Admin Admin() => new(Kit);
 
